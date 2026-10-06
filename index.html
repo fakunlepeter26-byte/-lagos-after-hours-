@@ -1,0 +1,264 @@
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Lagos After Hours</title>
+  <style>
+    html, body { margin:0; height:100%; overflow:hidden; background:#05080a; font-family:sans-serif; color:white; user-select:none; }
+    canvas { display:block; }
+    #ui { position:fixed; inset:0; pointer-events:none; }
+    .box { background:rgba(7, 16, 20, 0.75); border:1px solid rgba(255,255,255,0.2); border-radius:12px; padding:10px 14px; backdrop-filter:blur(8px); }
+    #stats { position:absolute; left:12px; top:12px; }
+    #mission { position:absolute; left:50%; top:12px; transform:translateX(-50%); text-align:center; min-width:200px; }
+    #hint { position:absolute; left:50%; bottom:110px; transform:translateX(-50%); display:none; background:rgba(229,164,60,0.9); color:#111; font-weight:bold; }
+    #pad { position:absolute; bottom:15px; left:15px; pointer-events:auto; }
+    .b, .act { width:56px; height:56px; margin:3px; border-radius:16px; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.12); color:white; font-size:20px; font-weight:bold; }
+    .act { background:#e5a43c; color:#111; width:64px; height:64px; border-radius:50%; }
+    #actions { position:absolute; right:15px; bottom:20px; pointer-events:auto; display:flex; gap:8px; align-items:center; }
+    #audio-toggle { position:absolute; right:12px; top:12px; pointer-events:auto; cursor:pointer; font-size:12px; }
+    small { opacity:.75; font-size:12px; }
+    .money { color:#52e577; font-weight:bold; font-size:18px; }
+  </style>
+</head>
+<body>
+<div id="ui">
+  <div id="stats" class="box">
+    <div class="money" id="cash">₦25,000</div>
+    <b id="state">ON FOOT</b><br>
+    <small id="fps">-- FPS</small>
+  </div>
+  <div id="mission" class="box">
+    <b id="m-title">NIGHT IN LAGOS</b><br>
+    <small id="objective">Find the shopkeeper</small>
+  </div>
+  <div id="hint" class="box"></div>
+  <button id="audio-toggle" class="box">🔊 Sound: Off</button>
+  <div id="pad">
+    <div style="text-align:center;"><button class="b" data-k="w">▲</button></div>
+    <div>
+      <button class="b" data-k="a">◀</button>
+      <button class="b" data-k="s">▼</button>
+      <button class="b" data-k="d">▶</button>
+    </div>
+  </div>
+  <div id="actions">
+    <button class="act" id="e">E</button>
+    <button class="act" id="run" style="background:rgba(255,255,255,0.2); color:white; width:54px; height:54px;">RUN</button>
+  </div>
+</div>
+
+<script type="module">
+import * as T from "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js";
+
+const S = new T.Scene(), R = new T.WebGLRenderer({ antialias: true, powerPreference: "high-performance" }), C = new T.PerspectiveCamera(65, innerWidth / innerHeight, 0.1, 500);
+R.setPixelRatio(Math.min(devicePixelRatio, 1.8)); R.setSize(innerWidth, innerHeight); R.shadowMap.enabled = true; R.shadowMap.type = T.PCFSoftShadowMap; R.outputColorSpace = T.SRGBColorSpace; R.toneMapping = T.ACESFilmicToneMapping;
+document.body.prepend(R.domElement);
+
+const skyDay = new T.Color(0x8db7c7), skyNight = new T.Color(0x0a0f18), fogDay = new T.Color(0x8db7c7), fogNight = new T.Color(0x060911);
+S.background = skyNight.clone(); S.fog = new T.FogExp2(fogNight, 0.012);
+
+const hemi = new T.HemisphereLight(0x445577, 0x111522, 0.6); S.add(hemi);
+const sun = new T.DirectionalLight(0xffe6c2, 1.2); sun.position.set(-50, 90, 40); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); S.add(sun);
+
+const streetLights = [];
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+let audioEnabled = false;
+
+document.getElementById('audio-toggle').onclick = () => {
+  if (AC.state === 'suspended') AC.resume();
+  audioEnabled = !audioEnabled;
+  document.getElementById('audio-toggle').textContent = audioEnabled ? "🔊 Sound: On" : "🔇 Sound: Off";
+};
+
+function playTone(freq, duration, type='sine', gainVal=0.1) {
+  if (!audioEnabled) return;
+  const osc = AC.createOscillator(), g = AC.createGain();
+  osc.type = type; osc.frequency.setValueAtTime(freq, AC.currentTime);
+  g.gain.setValueAtTime(gainVal, AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + duration);
+  osc.connect(g); g.connect(AC.destination);
+  osc.start(); osc.stop(AC.currentTime + duration);
+}
+
+let engineOsc, engineGain;
+function initEngineAudio() {
+  engineOsc = AC.createOscillator(); engineGain = AC.createGain();
+  engineOsc.type = 'sawtooth'; engineOsc.frequency.setValueAtTime(40, AC.currentTime);
+  engineGain.gain.setValueAtTime(0, AC.currentTime);
+  engineOsc.connect(engineGain); engineGain.connect(AC.destination); engineOsc.start();
+}
+initEngineAudio();
+
+function updateEngineSound(speed, driving) {
+  if (!audioEnabled || !driving) {
+    if (engineGain) engineGain.gain.setTargetAtTime(0, AC.currentTime, 0.1);
+    return;
+  }
+  const absSpd = Math.abs(speed);
+  engineOsc.frequency.setTargetAtTime(40 + absSpd * 4, AC.currentTime, 0.1);
+  engineGain.gain.setTargetAtTime(0.04 + (absSpd / 27) * 0.06, AC.currentTime, 0.1);
+}
+
+const M = c => new T.MeshStandardMaterial({ color: c, roughness: 0.82 }), colliders = [];
+function addCollider(x, z, w, d) { colliders.push(new T.Box2(new T.Vector2(x - w/2, z - d/2), new T.Vector2(x + w/2, z + d/2))); }
+const O = (g, m, x, y, z) => { let q = new T.Mesh(g, m); q.position.set(x, y, z); q.castShadow = q.receiveShadow = true; S.add(q); return q; };
+const B = (w, h, d, c, x, y, z, collide=true) => { let mesh = O(new T.BoxGeometry(w, h, d), M(c), x, y, z); if (collide) addCollider(x, z, w + 0.5, d + 0.5); return mesh; };
+
+O(new T.BoxGeometry(400, 0.1, 400), M(0x283227), 0, 0, 0).receiveShadow = true;
+function road(x, z, w, d) {
+  O(new T.BoxGeometry(w, 0.08, d), M(0x1a1c1e), x, 0.04, z);
+  for (let i = -w/2 + 5; i < w/2; i += 10) O(new T.BoxGeometry(0.3, 0.02, 1.8), M(0xd7c77a), x + i, 0.1, z);
+}
+road(0, 0, 220, 18); road(0, 0, 18, 220); road(0, 55, 220, 13); road(55, 0, 13, 220);
+
+function createStreetlight(x, z) {
+  B(0.3, 5, 0.3, 0x333333, x, 2.5, z, false);
+  O(new T.BoxGeometry(0.8, 0.2, 0.8), M(0xffffcc), x, 5, z);
+  const light = new T.PointLight(0xffaa44, 0, 20); light.position.set(x, 4.8, z); S.add(light); streetLights.push(light);
+}
+[-40, 0, 40, 80].forEach(x => { createStreetlight(x, 10); createStreetlight(x, -10); createStreetlight(10, x); createStreetlight(-10, x); });
+
+let cs = [0xc99b6a, 0xb96e4d, 0xbfc1b5, 0x718f96, 0xd0bc78, 0x986757];
+for (let i = 0; i < 65; i++) {
+  let x = Math.random() * 210 - 105, z = Math.random() * 210 - 105;
+  if (Math.abs(x) < 13 || Math.abs(z) < 13 || Math.abs(x - 55) < 10 || Math.abs(z - 55) < 10) continue;
+  let w = 6 + Math.random() * 10, d = 6 + Math.random() * 10, h = 5 + Math.random() * 16;
+  B(w, h, d, cs[i % 6], x, h/2, z);
+  if (Math.random() > 0.5) B(1.5, 1.8, 1.5, 0x30383a, x + w * 0.2, h + 0.9, z, false);
+}
+for (let i = 0; i < 55; i++) {
+  let x = Math.random() * 210 - 105, z = Math.random() * 210 - 105;
+  if (Math.abs(x) < 12 || Math.abs(z) < 12) continue;
+  B(0.5, 2.8, 0.5, 0x5b4028, x, 1.4, z, true);
+  O(new T.SphereGeometry(2, 10, 8), M(0x2d6439), x, 3.3, z);
+}
+B(6, 3.2, 4, 0xd49a55, -24, 1.6, 9); B(6.2, 0.2, 4.2, 0x245d72, -24, 3.3, 9);
+B(4, 2.2, 3, 0x884b34, 22, 1.1, -13); B(4.3, 0.2, 3.2, 0xe0ad43, 22, 2.3, -13);
+
+const P = new T.Group(); S.add(P);
+let pb = (w, h, d, c, x, y, z) => { let q = B(w, h, d, c, x, y, z, false); S.remove(q); q.position.set(x, y, z); P.add(q); return q; };
+pb(0.8, 1.2, 0.5, 0x234f75, 0, 1.15, 0); pb(0.24, 0.82, 0.27, 0x25282b, -0.2, 0.4, 0); pb(0.24, 0.82, 0.27, 0x25282b, 0.2, 0.4, 0);
+let hd = new T.Mesh(new T.SphereGeometry(0.32, 14, 10), M(0x70442f)); hd.position.y = 2; P.add(hd); P.position.set(0, 0, 25);
+
+function car() {
+  let g = new T.Group();
+  let a = new T.Mesh(new T.BoxGeometry(2, 0.65, 4.1), M(0xc93e32)); a.position.y = 0.65; g.add(a);
+  let c = new T.Mesh(new T.BoxGeometry(1.55, 0.7, 2), M(0x263e48)); c.position.set(0, 1.15, -0.15); g.add(c);
+  for (let x of [-0.82, 0.82]) for (let z of [-1.4, 1.4]) {
+    let w = new T.Mesh(new T.CylinderGeometry(0.34, 0.34, 0.22, 14), M(0x111111));
+    w.rotation.z = Math.PI / 2; w.position.set(x, 0.42, z); g.add(w);
+  }
+  const headL = new T.SpotLight(0xffffff, 4, 35, Math.PI / 5, 0.5); headL.position.set(-0.6, 0.7, -2); headL.target.position.set(-0.6, 0.2, -10);
+  const headR = new T.SpotLight(0xffffff, 4, 35, Math.PI / 5, 0.5); headR.position.set(0.6, 0.7, -2); headR.target.position.set(0.6, 0.2, -10);
+  g.add(headL, headL.target, headR, headR.target);
+  g.traverse(x => { if (x.isMesh) x.castShadow = true; }); return g;
+}
+let CAR = car(); CAR.position.set(5, 0, 25); CAR.rotation.y = Math.PI; S.add(CAR);
+
+let ns = [];
+function npc(x, z) {
+  let g = new T.Group(), b = new T.Mesh(new T.BoxGeometry(0.55, 1, 0.4), M(0x496e7a)), h = new T.Mesh(new T.SphereGeometry(0.22, 10, 8), M(0x70442f));
+  b.position.y = 0.9; h.position.y = 1.58; g.add(b, h); g.position.set(x, 0, z); S.add(g); ns.push({ g, a: Math.random() * 6, v: 0.2 + Math.random() * 0.3 });
+}
+[-18, -3, 15, 31, -32, 8, 41].forEach((x, i) => npc(x, [7, 17, -4, 11, -17, 42, -31][i]));
+
+function checkCollision(pos, radius=0.8) {
+  const pBox = new T.Box2(new T.Vector2(pos.x - radius, pos.z - radius), new T.Vector2(pos.x + radius, pos.z + radius));
+  for (let c of colliders) { if (c.intersectsBox(pBox)) return true; } return false;
+}
+
+let K = {}, drive = false, spd = 0, money = 25000, mission = 0, yaw = 0, pitch = 0.2;
+addEventListener("keydown", e => { K[e.key.toLowerCase()] = 1; if (e.key.toLowerCase() == "e") act(); });
+addEventListener("keyup", e => K[e.key.toLowerCase()] = 0);
+
+document.querySelectorAll(".b").forEach(b => {
+  let k = b.dataset.k;
+  b.ontouchstart = (e) => { e.preventDefault(); K[k] = 1; };
+  b.ontouchend = (e) => { e.preventDefault(); K[k] = 0; };
+});
+run.ontouchstart = (e) => { e.preventDefault(); K.shift = 1; }; run.ontouchend = (e) => { e.preventDefault(); K.shift = 0; };
+e.ontouchstart = (ev) => { ev.preventDefault(); act(); };
+
+function act() {
+  if (!drive && P.position.distanceTo(CAR.position) < 4) {
+    drive = true; P.visible = false; state.textContent = "DRIVING"; playTone(300, 0.15, 'triangle', 0.2); return;
+  }
+  if (drive) {
+    drive = false; P.visible = true; P.position.copy(CAR.position).add(new T.Vector3(2, 0, 0)); state.textContent = "ON FOOT"; playTone(200, 0.15, 'triangle', 0.2); return;
+  }
+  let n = ns.find(n => n.g.position.distanceTo(P.position) < 3);
+  if (n) {
+    if (!mission) {
+      mission = 1; objective.textContent = "Drive to the market"; show("Shopkeeper: Take this delivery job."); money += 2500; playTone(587.33, 0.3, 'sine', 0.2);
+    } else {
+      mission = 2; objective.textContent = "Job complete — explore Lagos"; show("Job complete +₦5,000"); money += 5000; playTone(880, 0.4, 'sine', 0.2);
+    }
+  }
+}
+
+function show(t) { hint.textContent = t; hint.style.display = "block"; setTimeout(() => hint.style.display = "none", 3000); }
+
+let down = 0, lastX = 0, lastY = 0;
+R.domElement.onpointerdown = e => { down = 1; lastX = e.clientX; lastY = e.clientY; };
+onpointerup = () => down = 0;
+onpointermove = e => {
+  if (!down) return;
+  yaw -= (e.clientX - lastX) * 0.006; pitch -= (e.clientY - lastY) * 0.003;
+  pitch = Math.max(-0.05, Math.min(0.5, pitch)); lastX = e.clientX; lastY = e.clientY;
+};
+
+const clock = new T.Clock(); let ft = performance.now(), fc = 0, timeOfDay = 0.8;
+function loop() {
+  requestAnimationFrame(loop);
+  let dt = Math.min(0.04, clock.getDelta());
+  timeOfDay += dt * 0.008; if (timeOfDay > 1) timeOfDay = 0;
+  let nightWeight = Math.sin(timeOfDay * Math.PI);
+  
+  S.background.lerpColors(skyDay, skyNight, nightWeight); S.fog.color.lerpColors(fogDay, fogNight, nightWeight);
+  hemi.intensity = 0.2 + (1 - nightWeight) * 0.8; sun.intensity = Math.max(0.1, (1 - nightWeight) * 1.5);
+  sun.position.x = Math.cos(timeOfDay * Math.PI * 2) * 100; sun.position.y = Math.sin(timeOfDay * Math.PI * 2) * 100;
+
+  const lampIntensity = nightWeight > 0.4 ? (nightWeight - 0.4) * 2.5 : 0;
+  streetLights.forEach(l => l.intensity = lampIntensity * 15);
+
+  let f = K.w || K.arrowup, b = K.s || K.arrowdown, l = K.a || K.arrowleft, r = K.d || K.arrowright;
+
+  if (drive) {
+    if (f) spd += 17 * dt; if (b) spd -= 13 * dt;
+    spd *= 0.985; if (l) CAR.rotation.y += 1.6 * dt; if (r) CAR.rotation.y -= 1.6 * dt;
+    spd = Math.max(-9, Math.min(27, spd));
+
+    let nextPos = CAR.position.clone().addScaledVector(new T.Vector3(0, 0, -1).applyAxisAngle(new T.Vector3(0, 1, 0), CAR.rotation.y), spd * dt);
+    if (!checkCollision(nextPos, 1.2)) CAR.position.copy(nextPos); else { spd = -spd * 0.4; playTone(100, 0.1, 'square', 0.15); }
+
+    if (mission == 1 && CAR.position.distanceTo(new T.Vector3(22, 0, -13)) < 7) {
+      mission = 2; money += 5000; objective.textContent = "Job complete — explore Lagos"; show("Delivery complete +₦5,000"); playTone(660, 0.35, 'sine', 0.25);
+    }
+  } else {
+    let v = new T.Vector3((r ? 1 : 0) - (l ? 1 : 0), 0, (b ? 1 : 0) - (f ? 1 : 0));
+    if (v.lengthSq()) {
+      v.normalize().applyAxisAngle(new T.Vector3(0, 1, 0), yaw);
+      let nextPos = P.position.clone().addScaledVector(v, (K.shift ? 8 : 4.5) * dt);
+      if (!checkCollision(nextPos, 0.4)) P.position.copy(nextPos);
+      P.rotation.y = Math.atan2(v.x, v.z);
+    }
+  }
+
+  updateEngineSound(spd, drive);
+  ns.forEach(n => { n.a += dt * n.v; n.g.position.x += Math.sin(n.a) * n.v * dt; n.g.position.z += Math.cos(n.a) * n.v * dt; });
+
+  let t = drive ? CAR : P, d = drive ? 10 : 7;
+  let w = new T.Vector3(Math.sin(yaw) * d, 4.7 + pitch * 3, Math.cos(yaw) * d).add(t.position);
+  C.position.lerp(w, 1 - Math.pow(0.001, dt)); C.lookAt(t.position.x, t.position.y + 1, t.position.z);
+
+  cash.textContent = "₦" + money.toLocaleString();
+  R.render(S, C);
+  fc++;
+  if (performance.now() - ft > 1000) { fps.textContent = Math.round(fc * 1000 / (performance.now() - ft)) + " FPS"; fc = 0; ft = performance.now(); }
+}
+loop();
+
+addEventListener("resize", () => { C.aspect = innerWidth / innerHeight; C.updateProjectionMatrix(); R.setSize(innerWidth, innerHeight); });
+</script>
+</body>
+</html>
